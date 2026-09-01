@@ -1,0 +1,33 @@
+src/extension.ts
+  s_009efe71bc7396::t_925efebc1bb73a 377-381
+package.json
+  s_009efe71bc7396::t_11acf990d0a917 6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "2caec164b81a9da4e057d23461509681a2c7caa9",
+  "prompts": {},
+  "sessions": {
+    "s_009efe71bc7396": {
+      "agent_id": {
+        "tool": "trae",
+        "id": "6a969e86e731996aed89ccaa",
+        "model": "glm-5.3-flash__max"
+      },
+      "human_author": "wangwc5 <wangwc5@asiainfo.com>",
+      "custom_attributes": {
+        "runtime_client": "trae-tob-git-ai",
+        "operation_id": "6a96a260e731996aed89cd41",
+        "client_type": "ide",
+        "source_scene": "agent",
+        "tool_use_id": "6a96a260e731996aed89cd41",
+        "external_session_id": "6a969e86e731996aed89ccaa",
+        "display_model_name": "GLM-5.3-Flash",
+        "edit_kind": "file_edit",
+        "tool_name": "Edit",
+        "session_id": "6a969e86e731996aed89ccaa"
+      }
+    }
+  }
+}
