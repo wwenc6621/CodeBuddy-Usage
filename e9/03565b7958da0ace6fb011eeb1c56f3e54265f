@@ -1,0 +1,32 @@
+package.json
+  s_009efe71bc7396::t_7eba0f1028e425 6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "e903565b7958da0ace6fb011eeb1c56f3e54265f",
+  "prompts": {},
+  "sessions": {
+    "s_009efe71bc7396": {
+      "agent_id": {
+        "tool": "trae",
+        "id": "6a969e86e731996aed89ccaa",
+        "model": "glm-5.3-flash__max"
+      },
+      "human_author": "wangwc5 <wangwc5@asiainfo.com>",
+      "custom_attributes": {
+        "runtime_client": "trae-tob-git-ai",
+        "edit_kind": "file_edit",
+        "operation_id": "6a96a017e731996aed89ccf2",
+        "external_session_id": "6a969e86e731996aed89ccaa",
+        "tool_id": "Edit",
+        "client_type": "ide",
+        "source_scene": "unknown",
+        "tool_use_id": "6a96a017e731996aed89ccf2",
+        "session_id": "6a969e86e731996aed89ccaa",
+        "tool_type": "agent",
+        "dedupe_key": "6a969e86e731996aed89ccaa:6a96a017e731996aed89ccf2:afterEdit:054b1b3a"
+      }
+    }
+  }
+}
