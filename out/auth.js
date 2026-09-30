@@ -199,32 +199,50 @@ function powershellPath() {
  * Windows：读取 `<userData>/Local State` 里的 `os_crypt.encrypted_key`，
  * 用 DPAPI（CurrentUser）解出 32 字节 AES 密钥。
  * 通过 PowerShell 调 `ProtectedData.Unprotect` 完成，无需原生模块。
+ *
+ * 注意：`ProtectedData` 位于 System.Security 程序集，Windows PowerShell 5.1 默认**未加载**，
+ * 必须先 `Add-Type -AssemblyName System.Security`，否则会报「找不到类型」。
  */
 async function readWindowsKey(localStatePath) {
+    if (!localStatePath || !fs.existsSync(localStatePath)) {
+        return { error: `Local State not found: ${localStatePath || "-"}` };
+    }
+    let protectedKey;
     try {
-        if (!fs.existsSync(localStatePath))
-            return undefined;
         const state = JSON.parse(fs.readFileSync(localStatePath, "utf8"));
         const b64 = state?.os_crypt?.encrypted_key;
         if (typeof b64 !== "string" || !b64)
-            return undefined;
+            return { error: "os_crypt.encrypted_key missing" };
         const raw = Buffer.from(b64, "base64");
         const prefix = Buffer.from("DPAPI", "ascii");
-        const protectedKey = raw.subarray(0, 5).equals(prefix) ? raw.subarray(5) : raw;
-        // 用 -EncodedCommand（UTF-16LE + base64）传脚本，彻底规避引号转义问题
-        const script = [
-            "$ErrorActionPreference='Stop'",
-            `$b=[Convert]::FromBase64String('${protectedKey.toString("base64")}')`,
-            "$k=[System.Security.Cryptography.ProtectedData]::Unprotect($b,$null,[System.Security.Cryptography.DataProtectionScope]::CurrentUser)",
-            "[Console]::Out.Write([Convert]::ToBase64String($k))",
-        ].join(";");
+        protectedKey = raw.subarray(0, 5).equals(prefix) ? raw.subarray(5) : raw;
+    }
+    catch (e) {
+        return { error: `Local State parse failed: ${String(e?.message ?? e).slice(0, 100)}` };
+    }
+    // 用 -EncodedCommand（UTF-16LE + base64）传脚本，彻底规避引号转义问题
+    const script = [
+        "$ErrorActionPreference='Stop'",
+        "Add-Type -AssemblyName System.Security",
+        `$b=[Convert]::FromBase64String('${protectedKey.toString("base64")}')`,
+        "$k=[System.Security.Cryptography.ProtectedData]::Unprotect($b,$null,[System.Security.Cryptography.DataProtectionScope]::CurrentUser)",
+        "[Console]::Out.Write([Convert]::ToBase64String($k))",
+    ].join(";");
+    try {
         const encoded = Buffer.from(script, "utf16le").toString("base64");
         const { stdout } = await execFileAsync(powershellPath(), ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], { timeout: 60000 });
         const key = Buffer.from(String(stdout).trim(), "base64");
-        return key.length ? key : undefined;
+        if (!key.length)
+            return { error: "DPAPI returned empty key" };
+        return { key };
     }
-    catch {
-        return undefined;
+    catch (e) {
+        const detail = String(e?.stderr ?? e?.message ?? e)
+            .trim()
+            .split(/\r?\n/)
+            .filter(Boolean)
+            .slice(-1)[0];
+        return { error: `DPAPI failed: ${(detail ?? "").slice(0, 120)}` };
     }
 }
 /** macOS：v10 = AES-128-CBC，IV 取密文前 16 字节 */
@@ -288,36 +306,51 @@ async function readAutoToken() {
         return { note: "auto-read unsupported on this platform" };
     }
     let sawDb = false;
-    let sawEncrypted = false;
+    /** 记录最后一个失败原因，便于用户/排查时看到具体卡在哪一步 */
+    let lastError;
     for (const host of hosts) {
         try {
             const enc = await readEncryptedSecret(host.dbPath);
             if (!enc)
                 continue;
             sawDb = true;
-            const key = process.platform === "win32"
-                ? await readWindowsKey(host.localStatePath ?? "")
-                : await readMacKey(host.keychainService ?? "", host.keychainAccount ?? "");
-            // 凭据存储不可用（钥匙串被拒 / DPAPI 失败）：不再尝试其它宿主，避免连环干扰
-            if (!key)
-                return { note: "credential store unavailable" };
-            const plain = decryptSecret(enc, key);
-            if (!plain)
+            let key;
+            if (process.platform === "win32") {
+                // DPAPI 不会弹窗，失败时可以安全地继续尝试其它宿主
+                const r = await readWindowsKey(host.localStatePath ?? "");
+                if (r.error) {
+                    lastError = r.error;
+                    continue;
+                }
+                key = r.key;
+            }
+            else {
+                key = await readMacKey(host.keychainService ?? "", host.keychainAccount ?? "");
+                // macOS 钥匙串被拒：立即停止，避免连环弹授权框
+                if (!key)
+                    return { note: "keychain access denied" };
+            }
+            if (!key) {
+                lastError = "credential store unavailable";
                 continue;
-            sawEncrypted = true;
+            }
+            const plain = decryptSecret(enc, key);
+            if (!plain) {
+                lastError = "failed to decrypt CodeBuddy session";
+                continue;
+            }
             const token = extractAccessToken(plain);
             if (token)
                 return { token };
+            lastError = "accessToken not found in session";
         }
-        catch {
-            // 单个宿主失败不影响其它候选
+        catch (e) {
+            lastError = String(e?.message ?? e).slice(0, 120);
         }
     }
     if (!sawDb)
         return { note: "no CodeBuddy session found" };
-    if (!sawEncrypted)
-        return { note: "failed to decrypt CodeBuddy session" };
-    return { note: "failed to read CodeBuddy session" };
+    return { note: lastError ?? "failed to read CodeBuddy session" };
 }
 let cache;
 let cacheAt = 0;

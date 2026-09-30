@@ -4,6 +4,19 @@
 
 所有值得注意的变更都会记录在此文件。
 
+## [0.9.3]
+
+### 修复
+
+- 修复 Windows 上自动读取始终失败（反复提示 `credential store unavailable`）：
+  Windows PowerShell 5.1 默认没有加载 `System.Security` 程序集，调用 DPAPI 前必须先
+  `Add-Type -AssemblyName System.Security`，否则找不到 `ProtectedData` 类型。
+
+### 变更
+
+- 自动读取失败时的提示改为给出具体原因（Local State 路径、DPAPI 报错摘要、解密失败等），便于定位问题。
+- Windows 上某个候选宿主失败会继续尝试下一个（DPAPI 不弹窗）；macOS 钥匙串被拒则立即停止，避免连环弹授权框。
+
 ## [0.9.2]
 
 ### 新增

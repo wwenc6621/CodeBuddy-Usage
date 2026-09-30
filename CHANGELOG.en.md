@@ -4,6 +4,20 @@
 
 All notable changes are documented in this file.
 
+## [0.9.3]
+
+### Fixed
+
+- Fixed Windows auto-read always failing (`credential store unavailable`): Windows PowerShell 5.1 does not
+  load the `System.Security` assembly by default, so `Add-Type -AssemblyName System.Security` must be called
+  before using DPAPI, otherwise the `ProtectedData` type cannot be found.
+
+### Changed
+
+- Failure notices now include the concrete reason (Local State path, DPAPI error summary, decryption failure, …)
+  so problems can be pinpointed. On Windows a failing candidate host now falls through to the next one
+  (DPAPI shows no prompt); on macOS a denied Keychain read still stops immediately to avoid repeated prompts.
+
 ## [0.9.2]
 
 ### Added
