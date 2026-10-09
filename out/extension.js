@@ -175,7 +175,9 @@ async function fetchUsage() {
         ProductCode: "p_tcaca",
         Status: [0, 3],
         OnlyValidPeriod: true,
-        PackageCodes: DEFAULT_PACKAGE_CODES,
+        // 全量口径：留空 = 不按套餐过滤。白名单会漏算不在 DEFAULT_PACKAGE_CODES 内的套餐
+        // （如 code_002 个人标准版），导致状态栏合计与官网 plans-usage 页数字不一致。
+        PackageCodes: [],
         NeedInUsage: true,
     };
     const resp = await authFetch(`${apiBase}/billing/meter/get-user-resource`, {
