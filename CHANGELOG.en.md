@@ -4,6 +4,17 @@
 
 All notable changes are documented in this file.
 
+## [0.9.5]
+
+### Fixed
+
+- Fixed the "Failed to claim buddy credits (HTTP_403)" warning on every refresh: the buddy API uses
+  **HTTP 403 to carry business results** (`claim` returns `403 {"code":403,"msg":"no unclaimed travel"}`
+  when there is nothing to claim), so 403 must not take part in auth decisions. Only 401 now means the
+  sign-in expired; 403 goes back to the caller and is handled via `code`/`msg`, and "nothing to claim"
+  is silent again.
+- `callBuddyApi` now falls back to the HTTP status when the body is not JSON, avoiding empty `HTTP_` messages.
+
 ## [0.9.4]
 
 ### Fixed
@@ -15,7 +26,7 @@ All notable changes are documented in this file.
   "don't read the system credential store again this session" lock by default, so the retry was guaranteed
   to fail and immediately reported "Login expired". The lock is now lifted before retrying.
 - Fixed HTTP 403 being reported as an expired sign-in: a 403 may come from a gateway/WAF or from missing
-  permissions, so it is now reported as `HTTP_403` instead of telling users to sign in again.
+  permissions, so it is no longer treated as an expired sign-in.
 - Fixed the built-in SQLite parser missing the newest data: `state.vscdb` runs in WAL mode, so an
   accessToken refreshed by CodeBuddy may still live only in `state.vscdb-wal`; the old reader looked at the
   main file only and kept returning the stale token (most visible on Windows, where `sqlite3` is unavailable

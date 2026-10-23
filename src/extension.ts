@@ -159,14 +159,19 @@ async function currentAuth(): Promise<AuthState> {
 /**
  * 带鉴权的 fetch：
  * - 统一注入 `Authorization: Bearer`，UA 一并带上；
- * - 遇到 401/403 时先清缓存（含持久化缓存）并**允许重新读取系统登录态**，
- *   再重试一次：CodeBuddy 可能刚刷新了 accessToken。重试仍失败才抛错，由 update() 统一提示。
+ * - **只有 401 才算登录失效**：清缓存（含持久化缓存）并允许重新读取系统登录态后重试一次。
  *
- * 之所以必须 `invalidateAuth(true)`：`invalidateAuth()` 默认不会解除「本次会话不再读取
- * 系统凭据」的封锁，导致重试时拿到的仍是同一个已被服务端拒绝的旧 token，必然再次失败。
+ * 为什么不把 403 当登录失效：这套接口会用 403 承载**业务结果**，例如
+ * `POST /activity/growth/buddy/travel/claim` 在「没有可领取的旅行积分」时返回
+ * `403 {"code":403,"msg":"no unclaimed travel"}`；而 token 真的无效时网关（apisix）
+ * 返回的是 401。早期版本把 403 一并当成过期，于是「喵喵无可领积分」这种正常状态
+ * 会表现为「登录已过期」并清掉 token 缓存，点击也修不好。
+ * 403 一律原样返回，交给调用方按 body 里的 code/msg 处理。
+ *
+ * 另外，重试前必须 `invalidateAuth(true)`：默认的 `invalidateAuth()` 不解除
+ * 「本次会话不再读取系统凭据」的封锁，会拿同一个失效 token 重试，必然再失败。
  */
 async function authFetch(url: string, init: RequestInit): Promise<Response> {
-  let lastStatus = 0;
   for (let attempt = 0; attempt < 2; attempt++) {
     const auth = await currentAuth();
     if (auth.mode === "none") throw new Error("NO_CREDENTIALS");
@@ -176,15 +181,12 @@ async function authFetch(url: string, init: RequestInit): Promise<Response> {
       "user-agent": USER_AGENT,
     };
     const resp = await fetch(url, { ...init, headers });
-    if (resp.status === 401 || resp.status === 403) {
-      lastStatus = resp.status;
+    if (resp.status === 401) {
       invalidateAuth(true);
       continue;
     }
     return resp;
   }
-  // 403 未必是登录过期（可能是网关/WAF 或权限不足）：单独区分，避免误导用户去重新登录
-  if (lastStatus === 403) throw new Error("HTTP_403");
   throw new Error("AUTH_EXPIRED");
 }
 
@@ -410,13 +412,21 @@ function buddyHeaders(): Record<string, string> {
   };
 }
 
-/** 调用喵喵接口（鉴权失败由 authFetch 抛出 AUTH_EXPIRED / NO_CREDENTIALS） */
+/**
+ * 调用喵喵接口（鉴权失败由 authFetch 抛出 AUTH_EXPIRED / NO_CREDENTIALS）。
+ *
+ * 注意：这套接口的「业务失败」用 HTTP 403 承载（如 `claim` 返回
+ * `403 {"code":403,"msg":"no unclaimed travel"}`），因此这里不看 HTTP 状态码，
+ * 只把 body 解析出来交给调用方判断；body 不是 JSON 时才用状态码兜底。
+ */
 async function callBuddyApi(sub: string, method: string, body?: string): Promise<any> {
   const apiBase = getConfig().get<string>("apiBase", "https://www.workbuddy.cn").replace(/\/$/, "");
   const init: RequestInit = { method, headers: buddyHeaders() };
   if (body !== undefined) init.body = body;
   const resp = await authFetch(`${apiBase}${BUDDY_PATH}/${sub}`, init);
-  const json: any = await resp.json().catch(() => ({}));
+  const json: any = await resp.json().catch(() => undefined);
+  if (!json || typeof json !== "object") return { code: resp.status, msg: `HTTP_${resp.status}` };
+  if (json.code == null) json.code = resp.status;
   return json;
 }
 
