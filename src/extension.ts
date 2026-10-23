@@ -1,12 +1,14 @@
 import * as vscode from "vscode";
 import {
   authHeaders,
+  avatarUsable,
   getAuth,
   invalidateAuth,
   resetAutoReadBlock,
   TokenStore,
   useTokenStore,
   AuthState,
+  Profile,
 } from "./auth";
 
 /**
@@ -934,6 +936,48 @@ function refreshTooltip() {
   }
 }
 
+/** markdown 文本转义：昵称里可能出现空格外的特殊字符，避免破坏标题/图片语法 */
+function mdText(s: string): string {
+  return s.replace(/([\\`*_[\]()<>!|])/g, "\\$1");
+}
+
+/**
+ * 头像展示尺寸（CSS 像素）。
+ * markdown 图片语法无法指定尺寸，只能让服务端按需求裁剪：
+ * 用 COS 的 `imageMogr2/thumbnail/NxN/iradius/N/2/format/png` 直接返回 N 像素的圆形图。
+ * 20px 与标题文字的行高接近，再大就会显得头像压过文字。
+ *
+ * 注意不能用 `imageMogr2/circle`：它输出 RGB，四角被填成白色，深色主题下会是个白方块；
+ * `iradius` + `format/png` 输出带 alpha 的 PNG（小尺寸时为调色板 + tRNS，同样透明），
+ * 圆外才是真透明。
+ */
+const AVATAR_PX = 20;
+
+/**
+ * 悬浮框标题：能读到账号信息时显示「头像 + 昵称 · CodeBuddy 积分余量」，
+ * 否则回落到原文案。
+ *
+ * 头像是 COS 签名 URL，签名过期后不可访问（markdown 会渲染成破图），
+ * 因此只在签名有效时附带。
+ */
+function titleLine(): string {
+  const profile: Profile | undefined = lastAuth?.profile;
+  const nickname = (profile?.nickname ?? "").trim();
+  if (!nickname) return t("### CodeBuddy Credits");
+  const name = mdText(nickname);
+  let avatar = "";
+  if (avatarUsable(profile)) {
+    const url = profile!.avatarUrl!;
+    const sep = url.includes("?") ? "&" : "?";
+    const radius = AVATAR_PX / 2;
+    // alt 留空：万一图片加载失败，不会把昵称重复渲染成文字
+    avatar =
+      `![](${url}${sep}imageMogr2/thumbnail/${AVATAR_PX}x${AVATAR_PX}` +
+      `/iradius/${radius}/format/png) `;
+  }
+  return `### ${avatar}${name} · ${t("CodeBuddy Credits")}`;
+}
+
 function buildTooltip(res: UsageResult, updatedAt?: Date): vscode.MarkdownString {
   const totalRemain = formatNumber(res.remain);
   const totalSize = formatNumber(res.total);
@@ -952,7 +996,7 @@ function buildTooltip(res: UsageResult, updatedAt?: Date): vscode.MarkdownString
     .replace(/\/$/, "")}/profile/plans-usage`;
 
   const lines: string[] = [];
-  lines.push(t("### CodeBuddy Credits"));
+  lines.push(titleLine());
   lines.push(``);
   const remainLine = t(
     "Remaining: `{0}` / [{1}]({2}) ({3}%)",

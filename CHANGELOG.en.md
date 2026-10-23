@@ -4,6 +4,20 @@
 
 All notable changes are documented in this file.
 
+## [0.9.6]
+
+### Added
+
+- The tooltip header now shows the current account: **avatar + nickname** instead of just
+  `CodeBuddy Credits`. The data comes straight from the CodeBuddy sign-in state
+  (`nickname` / `avatarUrl`), so no extra API call is needed.
+- The avatar is a signed COS URL (valid ~7 days; the bare URL returns 403), so it is cropped to a
+  20x20 round PNG via `imageMogr2` (`iradius` + `format/png`, close to the heading line height). When the signature nears expiry the
+  extension silently re-reads the sign-in state once to get a fresh URL (12-hour cooldown);
+  if that fails only the nickname is shown.
+- Upgrading from an older version: the persisted cache has no account info, so the first refresh
+  fills it in automatically (same cooldown).
+
 ## [0.9.5]
 
 ### Fixed

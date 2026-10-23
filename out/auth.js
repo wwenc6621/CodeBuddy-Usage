@@ -34,9 +34,11 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.jwtExpiry = jwtExpiry;
+exports.jwtNickname = jwtNickname;
 exports.invalidateAuth = invalidateAuth;
 exports.resetAutoReadBlock = resetAutoReadBlock;
 exports.useTokenStore = useTokenStore;
+exports.avatarUsable = avatarUsable;
 exports.getAuth = getAuth;
 exports.authHeaders = authHeaders;
 const child_process_1 = require("child_process");
@@ -77,6 +79,10 @@ const ENC_PREFIX = "v10";
 const CACHE_TTL_MS = 5 * 60 * 1000;
 /** 持久化缓存的 token 剩余有效期低于该值时，才重新去读系统凭据（CodeBuddy 可能已刷新） */
 const REFRESH_MARGIN_MS = 24 * 60 * 60 * 1000;
+/** 头像签名 URL 剩余有效期低于该值时，顺手重读一次登录态换新 URL（约 7 天窗口） */
+const PROFILE_MARGIN_MS = 2 * 24 * 60 * 60 * 1000;
+/** 头像刷新失败后的冷却时间，避免反复访问系统凭据 */
+const PROFILE_RETRY_MS = 12 * 60 * 60 * 1000;
 const PRODUCT_NAMES = [
     "Code",
     "Code - Insiders",
@@ -291,20 +297,68 @@ function extractAccessToken(plain) {
     const m = plain.match(/"accessToken":"([^"]+)"/);
     return m?.[1];
 }
-/** 解析 JWT 的 exp（毫秒时间戳）；非 JWT 或解析失败返回 undefined */
-function jwtExpiry(token) {
+/**
+ * 从 COS 签名 URL 里取签名截止时间（`q-sign-time=<start>;<end>`，秒级）。
+ * 到期后该 URL 不可再用，需要重读登录态换一个新签名。
+ */
+function avatarExpiry(url) {
+    if (!url)
+        return undefined;
+    const raw = url.split("?")[1];
+    if (!raw)
+        return undefined;
+    // 实际 URL 里分号是编码过的（`q-sign-time=1792736988%3B1793341788`），先解码
+    let query = raw;
+    try {
+        query = decodeURIComponent(raw);
+    }
+    catch {
+        /* 保留原串继续用正则匹配 */
+    }
+    const m = query.match(/(?:^|&)q-sign-time=(\d+)[;%3B]*(\d+)/i);
+    if (!m)
+        return undefined;
+    const end = Number(m[2]);
+    return Number.isFinite(end) && end > 0 ? end * 1000 : undefined;
+}
+/**
+ * 从会话明文里取账号信息（昵称 / 头像）。
+ * 登录态里本来就有 `nickname`、`avatarUrl`、`uid`、`uin` 等字段，
+ * 因此展示账号信息不需要额外请求任何接口。
+ */
+function extractProfile(plain) {
+    const nickname = plain.match(/"nickname":"([^"]*)"/)?.[1];
+    const avatarUrl = plain.match(/"avatarUrl":"([^"]*)"/)?.[1];
+    if (!nickname && !avatarUrl)
+        return undefined;
+    return { nickname, avatarUrl, avatarExpiresAt: avatarExpiry(avatarUrl) };
+}
+/** 解析 JWT payload；非 JWT 或解析失败返回 undefined */
+function jwtPayload(token) {
     const segment = token.split(".")[1];
     if (!segment)
         return undefined;
     try {
-        const json = JSON.parse(Buffer.from(segment.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
-        return typeof json?.exp === "number" ? json.exp * 1000 : undefined;
+        return JSON.parse(Buffer.from(segment.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
     }
     catch {
         return undefined;
     }
 }
-/** 自动读取 CodeBuddy 登录态里的 accessToken */
+/** 解析 JWT 的 exp（毫秒时间戳）；非 JWT 或解析失败返回 undefined */
+function jwtExpiry(token) {
+    const exp = jwtPayload(token)?.exp;
+    return typeof exp === "number" ? exp * 1000 : undefined;
+}
+/**
+ * 从 JWT 里取昵称（用于「只拿到手动 token」的场景，此时读不到会话明文）。
+ * id_token / accessToken 的 payload 里都带 nickname。
+ */
+function jwtNickname(token) {
+    const nickname = jwtPayload(token)?.nickname;
+    return typeof nickname === "string" && nickname ? nickname : undefined;
+}
+/** 自动读取 CodeBuddy 登录态里的 accessToken（顺带取账号信息） */
 async function readAutoToken() {
     const hosts = hostCandidates();
     if (hosts.length === 0) {
@@ -353,7 +407,7 @@ async function readAutoToken() {
             }
             const token = extractAccessToken(plain);
             if (token)
-                return { token };
+                return { token, profile: extractProfile(plain) };
             lastError = "accessToken not found in session";
         }
         catch (e) {
@@ -392,14 +446,57 @@ function resetAutoReadBlock() {
 function useTokenStore(store) {
     storeRef = store;
 }
+/** 头像签名是否即将/已经过期（过期后 markdown 会渲染成破图，干脆不展示） */
+function avatarUsable(profile, now = Date.now()) {
+    if (!profile?.avatarUrl)
+        return false;
+    if (profile.avatarExpiresAt == null)
+        return true;
+    return profile.avatarExpiresAt > now;
+}
+/** 头像签名临近过期：需要重读登录态换新 URL */
+function profileStale(profile, now = Date.now()) {
+    if (!profile?.avatarUrl || profile.avatarExpiresAt == null)
+        return false;
+    return profile.avatarExpiresAt - now < PROFILE_MARGIN_MS;
+}
+/** 上次尝试刷新头像的时间，用于冷却（每 12 小时最多一次） */
+let profileRefreshAt = 0;
+/**
+ * 补一次账号信息（头像 / 昵称）。
+ *
+ * 触发时机：持久化缓存里没有头像（从旧版本升级上来的缓存）、或头像签名临近过期
+ * （签名只有约 7 天，比 token 短得多）。失败完全静默——旧数据还能用，最坏也只是不显示头像；
+ * 12 小时冷却，避免反复访问系统凭据。
+ */
+async function refreshProfile(state) {
+    if (autoReadBlocked)
+        return;
+    if (Date.now() - profileRefreshAt < PROFILE_RETRY_MS)
+        return;
+    profileRefreshAt = Date.now();
+    const auto = await readAutoToken().catch(() => undefined);
+    if (!auto?.profile)
+        return;
+    state.profile = auto.profile;
+    if (storeRef && state.token) {
+        await storeRef
+            .set({ token: state.token, expiresAt: state.expiresAt, profile: auto.profile })
+            .catch(() => undefined);
+    }
+}
 /**
  * 获取当前生效的鉴权状态（带内存缓存）。
  * 优先级：持久化缓存（未临近过期）→ 自动读取系统登录态 → 手动输入 token。
  */
 async function getAuth(cfg) {
     const now = Date.now();
-    if (cache && now - cacheAt < CACHE_TTL_MS)
+    if (cache && now - cacheAt < CACHE_TTL_MS) {
+        if (!cache.profile?.avatarUrl || profileStale(cache.profile, now)) {
+            await refreshProfile(cache);
+        }
         return cache;
+    }
     const manualToken = (cfg.manualToken ?? "").trim();
     // 1. 持久化缓存：未临近过期就直接用，完全不需要访问系统凭据
     if (storeRef) {
@@ -407,7 +504,15 @@ async function getAuth(cfg) {
         if (cached?.token) {
             const expiresAt = cached.expiresAt ?? jwtExpiry(cached.token);
             if (expiresAt == null || expiresAt > now + REFRESH_MARGIN_MS) {
-                cache = { mode: "token-auto", token: cached.token, expiresAt };
+                cache = {
+                    mode: "token-auto",
+                    token: cached.token,
+                    expiresAt,
+                    profile: cached.profile ?? { nickname: jwtNickname(cached.token) },
+                };
+                // 旧版本缓存里没有头像：补一次（12 小时冷却）
+                if (!cache.profile?.avatarUrl)
+                    await refreshProfile(cache);
                 cacheAt = now;
                 return cache;
             }
@@ -419,10 +524,11 @@ async function getAuth(cfg) {
         if (auto.token) {
             const expiresAt = jwtExpiry(auto.token);
             if (expiresAt == null || expiresAt > now) {
+                const profile = auto.profile ?? { nickname: jwtNickname(auto.token) };
                 if (storeRef) {
-                    await storeRef.set({ token: auto.token, expiresAt }).catch(() => undefined);
+                    await storeRef.set({ token: auto.token, expiresAt, profile }).catch(() => undefined);
                 }
-                cache = { mode: "token-auto", token: auto.token, expiresAt };
+                cache = { mode: "token-auto", token: auto.token, expiresAt, profile };
                 cacheAt = now;
                 return cache;
             }
@@ -438,7 +544,14 @@ async function getAuth(cfg) {
     if (manualToken) {
         const expiresAt = jwtExpiry(manualToken);
         if (expiresAt == null || expiresAt > now) {
-            cache = { mode: "token-manual", token: manualToken, expiresAt, note: lastAutoNote };
+            cache = {
+                mode: "token-manual",
+                token: manualToken,
+                expiresAt,
+                note: lastAutoNote,
+                // 手动 token 读不到会话明文，只能从 JWT 里取昵称（没有头像）
+                profile: { nickname: jwtNickname(manualToken) },
+            };
             cacheAt = now;
             return cache;
         }

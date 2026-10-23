@@ -54,6 +54,7 @@ It stays valid for about 60 days; submitting an empty value clears it and retrie
 | ----------------------------------------------------- | ---------------------------------------------- |
 | Check the balance                                     | Just look at the number in the status bar      |
 | See details (total, percentage, per-package expiry)   | Hover over the status bar item                 |
+| See the current account                               | The tooltip header shows the avatar + nickname (read from the CodeBuddy sign-in state, no extra API call) |
 | Refresh manually                                      | Click the status bar item                      |
 | Claim credits / send the buddy out manually           | Click "Claim" or "Depart" in the tooltip       |
 

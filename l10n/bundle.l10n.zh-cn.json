@@ -61,6 +61,7 @@
   "[Depart](command:codebuddyUsage.buddyDepart \"Send your buddy on a task to earn credits\")": "[去旅行](command:codebuddyUsage.buddyDepart \"派喵喵出任务赚积分\")",
 
   "### CodeBuddy Credits": "### CodeBuddy 积分余量",
+  "CodeBuddy Credits": "CodeBuddy 积分余量",
   "Remaining: `{0}` / [{1}]({2}) ({3}%)": "总计：剩余 `{0}` / 总量 [{1}]({2})（{3}%）",
   "_{0} packages, showing the first 5_": "_共 {0} 个有余量套餐，仅显示前 5 条_",
   "| Package | Left | Total | Expires |": "| 套餐 | 剩余 | 总量 | 到期 |",
