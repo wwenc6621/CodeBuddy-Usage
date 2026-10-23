@@ -77,7 +77,7 @@ Hovering the status bar shows today's status at the bottom, e.g. `✓ Checked in
 | Symptom                             | What to do                                                          |
 | ----------------------------------- | ------------------------------------------------------------------- |
 | Shows "No credentials found"        | Make sure the CodeBuddy extension is signed in inside VS Code; otherwise paste an Access Token |
-| Shows "Login expired"               | The CodeBuddy extension sign-in expired — sign in again in VS Code, or paste an Access Token   |
+| Shows "Login expired"               | The CodeBuddy extension sign-in expired — sign in again in VS Code, then click the item and pick "Re-read the sign-in state and refresh" |
 | Shows "Fetch failed"                | Click the status bar item to retry                                  |
 | The number never changes            | Click the status bar item to refresh manually                       |
 | It asks for keychain access (macOS)  | Click "Always Allow" the first time; if it still fails, paste an Access Token |
@@ -92,7 +92,6 @@ Search for `codebuddyUsage` in VS Code settings:
 | Setting                   | Default                      | Description                                                          |
 | ------------------------- | ---------------------------- | -------------------------------------------------------------------- |
 | `accessToken`             | empty                        | JWT to paste when auto-read fails. **Normally not needed**            |
-| `userAgent`               | empty                        | Request UA; empty uses the built-in default                           |
 | `refreshIntervalMinutes`  | 30                           | Auto refresh interval (minutes); set 0 to disable                    |
 | `autoCheckin`             | on                           | Automatic daily check-in                                             |
 | `buddyTravel`             | on                           | Automatic buddy travel                                               |

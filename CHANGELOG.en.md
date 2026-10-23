@@ -4,6 +4,31 @@
 
 All notable changes are documented in this file.
 
+## [0.9.4]
+
+### Fixed
+
+- Fixed "Login expired" being a dead end: clicking used to open the Access Token input box, while the real
+  fix is "sign in again + re-read the sign-in state". Clicking the item now opens a recovery menu
+  (re-read the sign-in state and refresh / paste a token / clear the manual token / open the usage page).
+- Fixed the 401 retry reusing the same rejected token: `invalidateAuth()` does not lift the
+  "don't read the system credential store again this session" lock by default, so the retry was guaranteed
+  to fail and immediately reported "Login expired". The lock is now lifted before retrying.
+- Fixed HTTP 403 being reported as an expired sign-in: a 403 may come from a gateway/WAF or from missing
+  permissions, so it is now reported as `HTTP_403` instead of telling users to sign in again.
+- Fixed the built-in SQLite parser missing the newest data: `state.vscdb` runs in WAL mode, so an
+  accessToken refreshed by CodeBuddy may still live only in `state.vscdb-wal`; the old reader looked at the
+  main file only and kept returning the stale token (most visible on Windows, where `sqlite3` is unavailable
+  and the built-in parser is the only option).
+- Fixed macOS auto-read giving up when the first candidate host has no Keychain item (reported as
+  `keychain access denied`): a missing item (`security` exit code 44) shows no prompt, so the scan now
+  continues with the next host, which fixes machines with several VS Code–based IDEs installed.
+
+### Removed
+
+- Removed the `codebuddyUsage.userAgent` setting: the UA was only bound to the sign-in session in the old
+  Cookie mode, it plays no part in accessToken auth, so the built-in browser UA is always used.
+
 ## [0.9.3]
 
 ### Fixed

@@ -76,13 +76,11 @@ const DEFAULT_PACKAGE_CODES = [
 ];
 /**
  * 请求 UA：保持浏览器 UA 形态（部分网关对非浏览器 UA 更严格）。
- * accessToken 模式下 UA 不再与会话绑定，通常无需修改。
+ *
+ * 早期 Cookie 模式时服务端把会话与 UA 强绑定，UA 必须可配置；改用 accessToken
+ * 后 UA 不再参与鉴权，固定一个浏览器 UA 即可，因此不再提供配置项。
  */
-const DEFAULT_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36";
-/** 取生效 UA：用户配置优先，留空则回落内置默认值 */
-function getUA() {
-    return getConfig().get("userAgent", "").trim() || DEFAULT_UA;
-}
+const USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36";
 /** 扩展自己的 SecretStorage（VS Code 负责加解密，读写不会触发系统授权） */
 let secretsStore;
 /** 持久化 token 缓存键：把读到的 token 存下来，避免反复访问钥匙串 */
@@ -126,10 +124,14 @@ async function currentAuth() {
 /**
  * 带鉴权的 fetch：
  * - 统一注入 `Authorization: Bearer`，UA 一并带上；
- * - 遇到 401/403 时先清缓存（含持久化缓存）重试一次：CodeBuddy 可能刚刷新了 accessToken；
- *   重试仍失败才抛 AUTH_EXPIRED，由 update() 统一提示。
+ * - 遇到 401/403 时先清缓存（含持久化缓存）并**允许重新读取系统登录态**，
+ *   再重试一次：CodeBuddy 可能刚刷新了 accessToken。重试仍失败才抛错，由 update() 统一提示。
+ *
+ * 之所以必须 `invalidateAuth(true)`：`invalidateAuth()` 默认不会解除「本次会话不再读取
+ * 系统凭据」的封锁，导致重试时拿到的仍是同一个已被服务端拒绝的旧 token，必然再次失败。
  */
 async function authFetch(url, init) {
+    let lastStatus = 0;
     for (let attempt = 0; attempt < 2; attempt++) {
         const auth = await currentAuth();
         if (auth.mode === "none")
@@ -137,15 +139,19 @@ async function authFetch(url, init) {
         const headers = {
             ...(init.headers ?? {}),
             ...(0, auth_1.authHeaders)(auth),
-            "user-agent": getUA(),
+            "user-agent": USER_AGENT,
         };
         const resp = await fetch(url, { ...init, headers });
         if (resp.status === 401 || resp.status === 403) {
-            (0, auth_1.invalidateAuth)();
+            lastStatus = resp.status;
+            (0, auth_1.invalidateAuth)(true);
             continue;
         }
         return resp;
     }
+    // 403 未必是登录过期（可能是网关/WAF 或权限不足）：单独区分，避免误导用户去重新登录
+    if (lastStatus === 403)
+        throw new Error("HTTP_403");
     throw new Error("AUTH_EXPIRED");
 }
 function getConfig() {
@@ -557,6 +563,94 @@ async function ensureBuddy() {
     lastBuddyWasTraveling = (buddy.status?.state ?? status.state) === "traveling";
     return buddy;
 }
+/**
+ * 把状态栏切到「凭据异常」样式，并把点击行为指向 fixAuth。
+ *
+ * 早期版本这里直接指向 `setAccessToken`，用户点了只会弹一个 JWT 输入框——
+ * 但登录过期的真正解法是「在 CodeBuddy 里重新登录 + 重读登录态」，
+ * 绝大多数人既拿不到 JWT 也无从下手，于是表现为「点了也修不好」。
+ */
+function showAuthProblem(problem) {
+    const note = lastAuth?.note;
+    if (problem === "none") {
+        statusBarItem.text = `${icon("key")} ${t("No credentials found")}`;
+        statusBarItem.tooltip =
+            t("Sign in to the CodeBuddy extension (VS Code), or set an Access Token manually") +
+                "\n\n" +
+                t("Click to retry reading the sign-in state") +
+                (note ? `\n\n${note}` : "");
+        statusBarItem.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
+    }
+    else {
+        statusBarItem.text = `${icon("error")} ${t("Login expired")}`;
+        statusBarItem.tooltip =
+            t("The CodeBuddy extension sign-in expired — sign in again, or set an Access Token manually") +
+                "\n\n" +
+                t("Click to retry reading the sign-in state") +
+                (note ? `\n\n${note}` : "");
+        statusBarItem.backgroundColor = new vscode.ThemeColor("statusBarItem.errorBackground");
+    }
+    statusBarItem.command = "codebuddyUsage.fixAuth";
+    statusBarItem.show();
+}
+/**
+ * 凭据异常的修复菜单：重新读取登录态 / 手动输入 Token / 清除手动 Token / 打开官网。
+ * 「重新读取」会解除「本次会话不再读系统凭据」的封锁，因此无需重启 IDE 就能恢复。
+ */
+async function fixAuth() {
+    const manual = getConfig().get("accessToken", "").trim();
+    const items = [
+        {
+            label: `$(refresh) ${t("Re-read the CodeBuddy sign-in state and refresh")}`,
+            detail: t("Use this right after signing in again in the CodeBuddy extension"),
+            action: "retry",
+        },
+        { label: `$(key) ${t("Paste Access Token")}`, action: "token" },
+    ];
+    if (manual) {
+        items.push({
+            label: `$(trash) ${t("Clear the manually entered Access Token")}`,
+            detail: t("Use this when the pasted token itself has expired"),
+            action: "clear",
+        });
+    }
+    items.push({
+        label: `$(link-external) ${t("Open the usage page (to confirm sign-in)")}`,
+        action: "page",
+    });
+    const pick = await vscode.window.showQuickPick(items, {
+        title: t("CodeBuddy Usage: Sign-in problem"),
+        placeHolder: t("Sign in to CodeBuddy in VS Code first, then pick a recovery action"),
+        ignoreFocusOut: true,
+    });
+    if (!pick)
+        return;
+    if (pick.action === "retry") {
+        // allowCredentialRetry：清掉「本次会话不再读取系统凭据」的封锁，真正重读一次
+        (0, auth_1.invalidateAuth)(true);
+        (0, auth_1.resetAutoReadBlock)();
+        await update();
+        // 重读后仍然是凭据异常 → 说明 CodeBuddy 自己也没登录，给一句明确结论，别让用户继续盲点
+        if (statusBarItem.command === "codebuddyUsage.fixAuth") {
+            vscode.window.showWarningMessage(t("CodeBuddy Usage: Still no valid sign-in — sign in to CodeBuddy in VS Code first, then retry"));
+        }
+        return;
+    }
+    if (pick.action === "token") {
+        await setAccessToken();
+        return;
+    }
+    if (pick.action === "clear") {
+        await getConfig().update("accessToken", "", vscode.ConfigurationTarget.Global);
+        (0, auth_1.resetAutoReadBlock)();
+        (0, auth_1.invalidateAuth)(true);
+        vscode.window.showInformationMessage(t("CodeBuddy Usage: Access Token cleared, retrying auto-read"));
+        await update();
+        return;
+    }
+    const apiBase = getConfig().get("apiBase", "https://www.workbuddy.cn");
+    await vscode.env.openExternal(vscode.Uri.parse(`${apiBase}/profile/plans-usage`));
+}
 // ============================================================
 // 工具函数
 // ============================================================
@@ -665,24 +759,10 @@ async function update() {
     catch (e) {
         const msg = e?.message ?? String(e);
         if (msg === "NO_CREDENTIALS") {
-            const note = lastAuth?.note;
-            statusBarItem.text = `${icon("key")} ${t("No credentials found")}`;
-            statusBarItem.tooltip =
-                t("Sign in to the CodeBuddy extension (VS Code), or set an Access Token manually") +
-                    (note ? `\n\n${note}` : "");
-            statusBarItem.command = "codebuddyUsage.setAccessToken";
-            statusBarItem.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
-            statusBarItem.show();
+            showAuthProblem("none");
         }
         else if (msg === "AUTH_EXPIRED") {
-            const note = lastAuth?.note;
-            statusBarItem.text = `${icon("error")} ${t("Login expired")}`;
-            statusBarItem.tooltip =
-                t("The CodeBuddy extension sign-in expired — sign in again, or set an Access Token manually") +
-                    (note ? `\n\n${note}` : "");
-            statusBarItem.command = "codebuddyUsage.setAccessToken";
-            statusBarItem.backgroundColor = new vscode.ThemeColor("statusBarItem.errorBackground");
-            statusBarItem.show();
+            showAuthProblem("expired");
         }
         else {
             statusBarItem.text = `${icon("warning")} ${t("Fetch failed")}`;
@@ -918,10 +998,7 @@ async function buddyClaimCmd() {
     }
     catch (e) {
         if (e?.message === "AUTH_EXPIRED" || e?.message === "NO_CREDENTIALS") {
-            statusBarItem.text = `${icon("error")} ${t("Login expired")}`;
-            statusBarItem.tooltip = t("CodeBuddy login expired — sign in again, or set an Access Token manually");
-            statusBarItem.command = "codebuddyUsage.setAccessToken";
-            statusBarItem.show();
+            showAuthProblem(e?.message === "AUTH_EXPIRED" ? "expired" : "none");
             return;
         }
         lastBuddy.claim = { error: e?.message ?? String(e) };
@@ -951,10 +1028,7 @@ async function buddyDepartCmd() {
     }
     catch (e) {
         if (e?.message === "AUTH_EXPIRED" || e?.message === "NO_CREDENTIALS") {
-            statusBarItem.text = `${icon("error")} ${t("Login expired")}`;
-            statusBarItem.tooltip = t("CodeBuddy login expired — sign in again, or set an Access Token manually");
-            statusBarItem.command = "codebuddyUsage.setAccessToken";
-            statusBarItem.show();
+            showAuthProblem(e?.message === "AUTH_EXPIRED" ? "expired" : "none");
             return;
         }
         lastBuddy.depart = { error: e?.message ?? String(e) };
@@ -980,6 +1054,7 @@ function activate(context) {
     context.subscriptions.push(vscode.commands.registerCommand("codebuddyUsage.showDetail", () => update()));
     context.subscriptions.push(vscode.commands.registerCommand("codebuddyUsage.refresh", () => update()));
     context.subscriptions.push(vscode.commands.registerCommand("codebuddyUsage.setAccessToken", () => setAccessToken()));
+    context.subscriptions.push(vscode.commands.registerCommand("codebuddyUsage.fixAuth", () => fixAuth()));
     context.subscriptions.push(vscode.commands.registerCommand("codebuddyUsage.openUsagePage", () => {
         const apiBase = getConfig().get("apiBase", "https://www.workbuddy.cn");
         vscode.env.openExternal(vscode.Uri.parse(`${apiBase}/profile/plans-usage`));
@@ -992,8 +1067,7 @@ function activate(context) {
         if (e.affectsConfiguration("codebuddyUsage.refreshIntervalMinutes")) {
             scheduleTimer();
         }
-        if (e.affectsConfiguration("codebuddyUsage.accessToken") ||
-            e.affectsConfiguration("codebuddyUsage.userAgent")) {
+        if (e.affectsConfiguration("codebuddyUsage.accessToken")) {
             update();
         }
         if (e.affectsConfiguration("codebuddyUsage.buddyTravel")) {

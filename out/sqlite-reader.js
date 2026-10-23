@@ -46,8 +46,73 @@ const fs = __importStar(require("fs"));
  * 因此这里直接解析 SQLite 文件格式，只做「按键查值」这一件事。
  *
  * 支持：table B-tree（interior / leaf）、变长整数、溢出页链、
- *       NULL / 整数 / 浮点 / TEXT / BLOB 等常见 serial type。
+ *       NULL / 整数 / 浮点 / TEXT / BLOB 等常见 serial type，以及 `-wal` 增量。
  */
+/**
+ * 把 `<db>-wal` 里已提交的页叠加到主库镜像上，返回叠加后的镜像。
+ *
+ * 为什么需要：VS Code / CodeBuddy 的 `state.vscdb` 长期以 WAL 模式打开，最近的写入
+ * （比如 CodeBuddy 刚刷新过的 accessToken）可能还停留在 `-wal`、尚未回写主库。
+ * 只读主文件会读到**旧值**，表现为「明明刚登录，扩展却一直说登录已过期」。
+ *
+ * 只接受结构完整、salt 与页大小都对得上的 WAL；任何异常一律整体忽略，
+ * 退回只读主库，避免把原本可用的读取弄坏。
+ */
+function applyWal(db, walPath, dbPageSize) {
+    let wal;
+    try {
+        wal = fs.readFileSync(walPath);
+    }
+    catch {
+        return db;
+    }
+    if (wal.length < 32)
+        return db;
+    // 0x377f0682 / 0x377f0683 是 WAL 魔数（仅校验和字节序不同）
+    const magic = wal.readUInt32BE(0);
+    if (magic !== 0x377f0682 && magic !== 0x377f0683)
+        return db;
+    const pageSize = wal.readUInt32BE(8);
+    if (pageSize !== dbPageSize)
+        return db;
+    const salt1 = wal.readUInt32BE(16);
+    const salt2 = wal.readUInt32BE(20);
+    const frames = [];
+    let committed = 0;
+    for (let off = 32; off + 24 + pageSize <= wal.length; off += 24 + pageSize) {
+        const pageNo = wal.readUInt32BE(off);
+        const dbSize = wal.readUInt32BE(off + 4);
+        // salt 不一致说明是上一轮 WAL 的残留帧，之后的内容都不可信
+        if (wal.readUInt32BE(off + 8) !== salt1 || wal.readUInt32BE(off + 12) !== salt2)
+            break;
+        if (pageNo === 0)
+            break;
+        frames.push({ pageNo, offset: off + 24 });
+        // dbSize 非 0 表示该帧是一个提交点
+        if (dbSize !== 0)
+            committed = frames.length;
+    }
+    if (committed === 0)
+        return db;
+    // 主库文件可能只落盘了前几页（新写入的页只存在于 WAL），镜像要按需扩容
+    let maxPage = 0;
+    for (let i = 0; i < committed; i++)
+        maxPage = Math.max(maxPage, frames[i].pageNo);
+    const needed = maxPage * pageSize;
+    let img = db;
+    if (img.length < needed) {
+        img = Buffer.alloc(needed);
+        db.copy(img, 0);
+    }
+    else {
+        img = Buffer.from(db);
+    }
+    for (let i = 0; i < committed; i++) {
+        const { pageNo, offset } = frames[i];
+        wal.copy(img, (pageNo - 1) * pageSize, offset, offset + pageSize);
+    }
+    return img;
+}
 function readValueByKeyMatch(filePath, match) {
     let buf;
     try {
@@ -64,6 +129,8 @@ function readValueByKeyMatch(filePath, match) {
     const usable = pageSize - reserved;
     if (pageSize <= 0 || usable <= 0)
         return undefined;
+    // 先叠加未回写的 WAL 页，保证读到的是最新提交的数据
+    buf = applyWal(buf, `${filePath}-wal`, pageSize);
     // 第 1 页的前 100 字节是数据库文件头，B-tree 页头从该页的 offset 100 处开始；
     // 但页内的 cell 指针 / cell 偏移全部以「页起始」为基准（第 1 页即文件 offset 0），
     // 所以读取页头要加 headerOffset，而定位 cell 用原始偏移。

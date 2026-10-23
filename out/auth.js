@@ -173,7 +173,11 @@ async function readEncryptedSecret(dbPath) {
     }
     return undefined;
 }
-/** macOS：从钥匙串取 safeStorage 密钥并派生 AES key；不可用/被拒时返回 undefined */
+/**
+ * macOS：从钥匙串取 safeStorage 密钥并派生 AES key。
+ * 需要区分「条目根本不存在」（errSecItemNotFound，正常情况，继续试下一个宿主）
+ * 与「用户拒绝了授权」（不可继续，否则会连环弹框）。
+ */
 async function readMacKey(service, account) {
     try {
         const { stdout } = await execFileAsync("security", ["find-generic-password", "-s", service, "-a", account, "-w"], 
@@ -181,12 +185,13 @@ async function readMacKey(service, account) {
         { timeout: 180000 });
         const password = String(stdout).trim();
         if (!password)
-            return undefined;
+            return {};
         // 实测：safeStorage 的 AES key = PBKDF2(钥匙串密码, "saltysalt", 1003, SHA1, 16)
-        return crypto.pbkdf2Sync(password, "saltysalt", 1003, 16, "sha1");
+        return { key: crypto.pbkdf2Sync(password, "saltysalt", 1003, 16, "sha1") };
     }
-    catch {
-        return undefined;
+    catch (e) {
+        // `security` 在条目不存在时以 44 退出（errSecItemNotFound），此时并未弹过授权框
+        return { notFound: e?.code === 44 || e?.code === "44" };
     }
 }
 /** PowerShell 可执行文件路径（优先系统目录，避免 PATH 缺失） */
@@ -325,8 +330,15 @@ async function readAutoToken() {
                 key = r.key;
             }
             else {
-                key = await readMacKey(host.keychainService ?? "", host.keychainAccount ?? "");
-                // macOS 钥匙串被拒：立即停止，避免连环弹授权框
+                const r = await readMacKey(host.keychainService ?? "", host.keychainAccount ?? "");
+                // 条目不存在（该宿主没登录过 / 未启用 safeStorage）：静默换下一个宿主，
+                // 这一步不会弹授权框，因此不会造成连环弹窗
+                if (r.notFound) {
+                    lastError = "keychain item not found";
+                    continue;
+                }
+                key = r.key;
+                // 条目存在但被拒（用户点了「拒绝」/ 超时）：立即停止，避免连环弹授权框
                 if (!key)
                     return { note: "keychain access denied" };
             }

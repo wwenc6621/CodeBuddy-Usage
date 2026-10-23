@@ -8,6 +8,17 @@
   "Sign in to the CodeBuddy extension (VS Code), or set an Access Token manually": "请在 VS Code 中登录 CodeBuddy 扩展，或手动设置 Access Token",
   "Login expired": "登录已过期",
   "The CodeBuddy extension sign-in expired — sign in again, or set an Access Token manually": "CodeBuddy 扩展登录已过期 — 请在 VS Code 中重新登录，或手动设置 Access Token",
+  "Click to retry reading the sign-in state": "点击可重新读取登录态 / 修复登录",
+
+  "CodeBuddy Usage: Sign-in problem": "CodeBuddy Usage: 登录问题",
+  "Sign in to CodeBuddy in VS Code first, then pick a recovery action": "请先在 VS Code 里登录 CodeBuddy，再选择处理方式",
+  "Re-read the CodeBuddy sign-in state and refresh": "重新读取 CodeBuddy 登录态并刷新",
+  "Use this right after signing in again in the CodeBuddy extension": "刚在 CodeBuddy 里重新登录过，用这一项",
+  "Paste Access Token": "手动输入 Access Token",
+  "Clear the manually entered Access Token": "清除手动输入的 Access Token",
+  "Use this when the pasted token itself has expired": "之前手动填过 Token 且已失效时，用这一项",
+  "Open the usage page (to confirm sign-in)": "打开官网用量页（确认登录状态）",
+  "CodeBuddy Usage: Still no valid sign-in — sign in to CodeBuddy in VS Code first, then retry": "CodeBuddy Usage: 仍没有可用的登录态 — 请先在 VS Code 里登录 CodeBuddy，再重试",
 
   "_Until `{0}`_": "_有效期至 `{0}`_",
   "`⚠ Not signed in`": "`⚠ 未登录`",
